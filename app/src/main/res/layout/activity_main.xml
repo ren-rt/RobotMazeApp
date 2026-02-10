@@ -32,7 +32,7 @@
         android:layout_height="0dp"
         android:visibility="gone"
         app:layout_constraintTop_toBottomOf="@+id/processed_image_view"
-        app:layout_constraintBottom_toTopOf="@+id/capture_button">
+        app:layout_constraintBottom_toTopOf="@+id/capture_upload_layout">
 
         <TextView
             android:id="@+id/grid_text_view"
@@ -42,26 +42,56 @@
             android:gravity="center" />
     </ScrollView>
 
-    <Button
-        android:id="@+id/capture_button"
+    <LinearLayout
+        android:id="@+id/capture_upload_layout"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:onClick="onCaptureButtonClick"
-        android:text="Capture"
+        android:orientation="horizontal"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        android:layout_marginBottom="32dp" />
+        android:layout_marginBottom="32dp">
 
-    <Button
-        android:id="@+id/back_button"
+        <Button
+            android:id="@+id/capture_button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:onClick="onCaptureButtonClick"
+            android:text="Capture"/>
+
+        <Button
+            android:id="@+id/upload_button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:onClick="onUploadButtonClick"
+            android:text="Upload" />
+
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/process_back_layout"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Back"
+        android:orientation="horizontal"
         android:visibility="gone"
         app:layout_constraintBottom_toBottomOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        android:layout_marginBottom="32dp" />
+        android:layout_marginBottom="32dp">
+
+        <Button
+            android:id="@+id/back_button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Back" />
+
+        <Button
+            android:id="@+id/process_button"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:onClick="onProcessButtonClick"
+            android:text="Process" />
+
+    </LinearLayout>
 
 </androidx.constraintlayout.widget.ConstraintLayout>

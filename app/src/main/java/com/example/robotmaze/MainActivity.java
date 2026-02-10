@@ -1,11 +1,17 @@
 package com.example.robotmaze;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Matrix;
+import android.graphics.Paint;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.MediaStore;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
@@ -14,7 +20,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.activity.EdgeToEdge;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.CameraSelector;
@@ -40,12 +47,17 @@ import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
 import org.opencv.core.MatOfPoint2f;
 import org.opencv.core.Point;
+import org.opencv.core.Scalar;
 import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
@@ -63,16 +75,18 @@ public class MainActivity extends AppCompatActivity {
 
     private PreviewView previewView;
     private ImageView processedImageView;
-    private Button captureButton;
-    private Button backButton;
+    private View captureUploadLayout;
+    private View processBackLayout;
     private ScrollView gridScrollView;
     private TextView gridTextView;
     private ImageCapture imageCapture;
+    private Bitmap originalBitmap;
+    private ActivityResultLauncher<Intent> pickImageLauncher;
+
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
             Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
@@ -82,8 +96,9 @@ public class MainActivity extends AppCompatActivity {
 
         previewView = findViewById(R.id.preview_view);
         processedImageView = findViewById(R.id.processed_image_view);
-        captureButton = findViewById(R.id.capture_button);
-        backButton = findViewById(R.id.back_button);
+        captureUploadLayout = findViewById(R.id.capture_upload_layout);
+        processBackLayout = findViewById(R.id.process_back_layout);
+        Button backButton = findViewById(R.id.back_button);
         gridScrollView = findViewById(R.id.grid_scroll_view);
         gridTextView = findViewById(R.id.grid_text_view);
 
@@ -95,33 +110,76 @@ public class MainActivity extends AppCompatActivity {
         }
 
         backButton.setOnClickListener(v -> showPreview());
+
+        pickImageLauncher = registerForActivityResult(new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() == RESULT_OK && result.getData() != null && result.getData().getData() != null) {
+                        Uri imageUri = result.getData().getData();
+                        try (InputStream inputStream = getContentResolver().openInputStream(imageUri)) {
+                            originalBitmap = BitmapFactory.decodeStream(inputStream);
+                            displayBinarizedImage(originalBitmap);
+                        } catch (IOException e) {
+                            Log.e(TAG, "Failed to load image from gallery", e);
+                        }
+                    }
+                });
     }
 
     public void onCaptureButtonClick(View view) {
         imageCapture.takePicture(ContextCompat.getMainExecutor(this), new ImageCapture.OnImageCapturedCallback() {
             @Override
             public void onCaptureSuccess(@NonNull ImageProxy image) {
-                Bitmap bitmap = imageProxyToBitmap(image);
-                Bitmap processedBitmap = processMaze(bitmap);
-                showProcessedImage(processedBitmap);
+                originalBitmap = imageProxyToBitmap(image);
+                displayBinarizedImage(originalBitmap);
                 image.close();
             }
 
             @Override
             public void onError(@NonNull ImageCaptureException exception) {
-                Log.e("CameraX", "Capture failed: " + exception.getMessage());
+                Log.e("CameraX", "Capture failed: ", exception);
             }
         });
     }
 
-    private Bitmap processMaze(Bitmap bitmap) {
+    public void onUploadButtonClick(View view) {
+        Intent intent = new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+        pickImageLauncher.launch(intent);
+    }
+
+    private void displayBinarizedImage(Bitmap bitmap) {
+        Mat originalMat = new Mat();
+        Utils.bitmapToMat(bitmap, originalMat);
+        Mat grayTemp = new Mat();
+        Imgproc.cvtColor(originalMat, grayTemp, Imgproc.COLOR_RGBA2GRAY);
+        Mat binaryTemp = new Mat();
+        Imgproc.threshold(grayTemp, binaryTemp, 0, 255, Imgproc.THRESH_BINARY | Imgproc.THRESH_OTSU);
+
+        Bitmap binarizedBitmap = Bitmap.createBitmap(binaryTemp.cols(), binaryTemp.rows(), Bitmap.Config.ARGB_8888);
+        Utils.matToBitmap(binaryTemp, binarizedBitmap);
+
+        showBinarizedImage(binarizedBitmap);
+
+        originalMat.release();
+        grayTemp.release();
+        binaryTemp.release();
+    }
+
+    public void onProcessButtonClick(View view) {
+        if (originalBitmap != null) {
+            processMaze(originalBitmap);
+        }
+    }
+
+    private void processMaze(Bitmap bitmap) {
         Mat originalMat = new Mat();
         Utils.bitmapToMat(bitmap, originalMat);
 
         Mat grayTemp = new Mat();
         Imgproc.cvtColor(originalMat, grayTemp, Imgproc.COLOR_RGBA2GRAY);
+
         Mat binaryTemp = new Mat();
-        Imgproc.threshold(grayTemp, binaryTemp, 128, 255, Imgproc.THRESH_BINARY);
+        Imgproc.threshold(grayTemp, binaryTemp, 0, 255, Imgproc.THRESH_BINARY | Imgproc.THRESH_OTSU);
+
         Point[] corners = findMazeCorners(binaryTemp);
 
         Mat processedMat;
@@ -135,95 +193,23 @@ public class MainActivity extends AppCompatActivity {
             processedMat = robustClean(originalMat);
         }
 
-        int[][] grid = convertToLogicGrid(processedMat, 100);
+        int gridSize = 20;
+        int[][] grid = convertToLogicGrid(processedMat, gridSize);
+
         displayGrid(grid);
 
-        Mat displayMat = debugVisualGrid(grid, 10, 10);
+        Mat displayMat = new Mat(1000, 1000, CvType.CV_8UC3, new Scalar(255, 255, 255));
+        Bitmap gridBitmap = Bitmap.createBitmap(displayMat.cols(), displayMat.rows(), Bitmap.Config.ARGB_8888);
+        Utils.matToBitmap(displayMat, gridBitmap);
 
-        Bitmap processedBitmap = Bitmap.createBitmap(displayMat.cols(), displayMat.rows(), Bitmap.Config.ARGB_8888);
-        Utils.matToBitmap(displayMat, processedBitmap);
+        List<PathFinder.Node> path = PathFinder.findPath(grid, 0, 0, grid.length - 1, grid[0].length - 1);
+        drawPathOnBitmap(gridBitmap, path, gridSize);
 
-        // Release memory
         originalMat.release();
         grayTemp.release();
         binaryTemp.release();
         processedMat.release();
         displayMat.release();
-
-        return processedBitmap;
-    }
-
-    private Mat robustClean(Mat warpedMat) {
-        Mat gray = new Mat();
-        Mat binary = new Mat();
-
-        // 1. Gray and Blur
-        Imgproc.cvtColor(warpedMat, gray, Imgproc.COLOR_BGR2GRAY);
-        Imgproc.GaussianBlur(gray, gray, new Size(5, 5), 0);
-
-        // 2. Contrast Stretch (The Fix for "All White" images)
-        // This forces the maze walls to be dark even in bright light
-        Core.normalize(gray, gray, 0, 255, Core.NORM_MINMAX);
-
-        // 3. OTSU Thresholding (The "Smart" Threshold)
-        // Instead of choosing a number like 128, OTSU analyzes the
-        // histogram to find the "perfect" split point between path and wall.
-        Imgproc.threshold(gray, binary, 0, 255, Imgproc.THRESH_BINARY | Imgproc.THRESH_OTSU);
-
-        // 4. De-Noising
-        // This removes those "random black blocks" that aren't walls
-        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
-        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_OPEN, kernel);
-
-        return binary;
-    }
-
-    private Mat debugVisualGrid(int[][] grid, int rows, int cols) {
-        Mat debugMat = new Mat(rows, cols, CvType.CV_8UC1);
-        for (int r = 0; r < rows; r++) {
-            for (int c = 0; c < cols; c++) {
-                // Walls = Black(0), Paths = White(255)
-                double val = (grid[r][c] == 1) ? 0 : 255;
-                debugMat.put(r, c, val);
-            }
-        }
-        // Zoom it back up to see it clearly
-        Mat displayMat = new Mat();
-        Imgproc.resize(debugMat, displayMat, new Size(1000, 1000), 0, 0, Imgproc.INTER_NEAREST);
-        debugMat.release();
-        return displayMat;
-    }
-
-    public int[][] convertToLogicGrid(Mat binaryMat, int gridSize) {
-        int rows = binaryMat.rows() / gridSize;
-        int cols = binaryMat.cols() / gridSize;
-        int[][] logicGrid = new int[rows][cols];
-
-        for (int r = 0; r < rows; r++) {
-            for (int c = 0; c < cols; c++) {
-
-                boolean isWall = false;
-                // Check a 5x5 area around the center of the grid cell
-                for (int i = -2; i <= 2; i++) {
-                    for (int j = -2; j <= 2; j++) {
-                        int checkR = r * gridSize + (gridSize / 2) + i;
-                        int checkC = c * gridSize + (gridSize / 2) + j;
-
-                        // Stay within bounds
-                        if (checkR >= 0 && checkR < binaryMat.rows() && checkC >= 0 && checkC < binaryMat.cols()) {
-                            double[] pixel = binaryMat.get(checkR, checkC);
-                            if (pixel[0] < 120) { // If ANY pixel is dark enough
-                                isWall = true;
-                                break;
-                            }
-                        }
-                    }
-                    if (isWall) break;
-                }
-                logicGrid[r][c] = isWall ? 1 : 0;
-            }
-        }
-        return logicGrid;
     }
 
     private void displayGrid(int[][] grid) {
@@ -234,7 +220,78 @@ public class MainActivity extends AppCompatActivity {
             }
             gridText.append("\n");
         }
-        gridTextView.setText(gridText.toString());
+        runOnUiThread(() -> {
+            gridTextView.setText(gridText.toString());
+            gridScrollView.setVisibility(View.VISIBLE);
+        });
+    }
+
+    private void drawPathOnBitmap(Bitmap baseBitmap, List<PathFinder.Node> path, int gridSize) {
+        Bitmap mutableBitmap = baseBitmap.copy(Bitmap.Config.ARGB_8888, true);
+        Canvas canvas = new Canvas(mutableBitmap);
+        Paint paint = new Paint();
+        paint.setColor(Color.RED);
+        paint.setStrokeWidth(5f);
+
+        if (path != null) {
+            for (int i = 0; i < path.size() - 1; i++) {
+                float startX = path.get(i).y * gridSize + (gridSize / 2f);
+                float startY = path.get(i).x * gridSize + (gridSize / 2f);
+                float endX = path.get(i + 1).y * gridSize + (gridSize / 2f);
+                float endY = path.get(i + 1).x * gridSize + (gridSize / 2f);
+                canvas.drawLine(startX, startY, endX, endY, paint);
+            }
+        }
+
+        runOnUiThread(() -> processedImageView.setImageBitmap(mutableBitmap));
+    }
+
+    private Mat robustClean(Mat warpedMat) {
+        Mat gray = new Mat();
+        Mat binary = new Mat();
+
+        Imgproc.cvtColor(warpedMat, gray, Imgproc.COLOR_BGR2GRAY);
+        Imgproc.GaussianBlur(gray, gray, new Size(5, 5), 0);
+
+        Core.normalize(gray, gray, 0, 255, Core.NORM_MINMAX);
+
+        Imgproc.threshold(gray, binary, 0, 255, Imgproc.THRESH_BINARY_INV | Imgproc.THRESH_OTSU);
+
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
+        Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_OPEN, kernel);
+
+        gray.release();
+        kernel.release();
+
+        return binary;
+    }
+
+    public int[][] convertToLogicGrid(Mat binaryMat, int gridSize) {
+        int rows = binaryMat.rows() / gridSize;
+        int cols = binaryMat.cols() / gridSize;
+        int[][] logicGrid = new int[rows][cols];
+
+        for (int r = 0; r < rows; r++) {
+            for (int c = 0; c < cols; c++) {
+                int wallPixelCount = 0;
+
+                for (int i = 0; i < gridSize; i++) {
+                    for (int j = 0; j < gridSize; j++) {
+                        int checkR = r * gridSize + i;
+                        int checkC = c * gridSize + j;
+
+                        if (checkR < binaryMat.rows() && checkC < binaryMat.cols()) {
+                            double[] pixel = binaryMat.get(checkR, checkC);
+                            if (pixel[0] > 200) {
+                                wallPixelCount++;
+                            }
+                        }
+                    }
+                }
+                logicGrid[r][c] = (wallPixelCount > (gridSize * gridSize * 0.15)) ? 1 : 0;
+            }
+        }
+        return logicGrid;
     }
 
     private Mat warpMaze(Mat input, Point[] corners) {
@@ -253,15 +310,14 @@ public class MainActivity extends AppCompatActivity {
         Mat warped = new Mat();
         Imgproc.warpPerspective(input, warped, perspectiveTransform, new Size(1000, 1000));
         perspectiveTransform.release();
+        src.release();
+        dst.release();
         return warped;
     }
 
     private Point[] sortCorners(Point[] corners) {
-        List<Point> cornerList = new ArrayList<>();
-        for (Point corner : corners) {
-            cornerList.add(corner);
-        }
-        Collections.sort(cornerList, (p1, p2) -> Double.compare(p1.y, p2.y));
+        List<Point> cornerList = new ArrayList<>(Arrays.asList(corners));
+        cornerList.sort(Comparator.comparingDouble(p -> p.y));
         if (cornerList.get(0).x > cornerList.get(1).x) {
             Collections.swap(cornerList, 0, 1);
         }
@@ -269,9 +325,7 @@ public class MainActivity extends AppCompatActivity {
             Collections.swap(cornerList, 2, 3);
         }
 
-        Point[] sortedCorners = new Point[4];
-        cornerList.toArray(sortedCorners);
-        return sortedCorners;
+        return cornerList.toArray(new Point[0]);
     }
 
 
@@ -301,28 +355,34 @@ public class MainActivity extends AppCompatActivity {
                 Point[] result = approx.toArray();
                 approx.release();
                 contour2f.release();
-                largestContour.release();
                 return result;
             }
+            approx.release();
+            contour2f.release();
         }
+
+        for (MatOfPoint contour : contours) {
+            contour.release();
+        }
+        hierarchy.release();
+
         return null;
     }
 
-
-    private void showProcessedImage(Bitmap bitmap) {
+    private void showBinarizedImage(Bitmap bitmap) {
         previewView.setVisibility(View.GONE);
-        captureButton.setVisibility(View.GONE);
+        captureUploadLayout.setVisibility(View.GONE);
         processedImageView.setVisibility(View.VISIBLE);
-        backButton.setVisibility(View.VISIBLE);
-        gridScrollView.setVisibility(View.VISIBLE);
+        processBackLayout.setVisibility(View.VISIBLE);
+        gridScrollView.setVisibility(View.GONE);
         processedImageView.setImageBitmap(bitmap);
     }
 
     private void showPreview() {
         previewView.setVisibility(View.VISIBLE);
-        captureButton.setVisibility(View.VISIBLE);
+        captureUploadLayout.setVisibility(View.VISIBLE);
         processedImageView.setVisibility(View.GONE);
-        backButton.setVisibility(View.GONE);
+        processBackLayout.setVisibility(View.GONE);
         gridScrollView.setVisibility(View.GONE);
     }
 
