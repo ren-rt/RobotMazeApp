@@ -1,6 +1,7 @@
 package com.example.robotmaze;
 
 import android.Manifest;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
@@ -20,6 +21,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.EdgeToEdge;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
@@ -50,6 +52,7 @@ import org.opencv.core.Point;
 import org.opencv.core.Scalar;
 import org.opencv.core.Size;
 import org.opencv.imgproc.Imgproc;
+import org.opencv.imgproc.Moments;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -83,10 +86,15 @@ public class MainActivity extends AppCompatActivity {
     private Bitmap originalBitmap;
     private ActivityResultLauncher<Intent> pickImageLauncher;
 
+    private List<Point> detectedEntryPoints = new ArrayList<>();
+    private int[][] currentGrid;
+    private int currentGridSize;
+    private Mat currentProcessedMat;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
             Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
@@ -126,6 +134,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void onCaptureButtonClick(View view) {
+        if (imageCapture == null) return;
         imageCapture.takePicture(ContextCompat.getMainExecutor(this), new ImageCapture.OnImageCapturedCallback() {
             @Override
             public void onCaptureSuccess(@NonNull ImageProxy image) {
@@ -182,38 +191,247 @@ public class MainActivity extends AppCompatActivity {
 
         Point[] corners = findMazeCorners(binaryTemp);
 
-        Mat processedMat;
+        Mat warpedOriginal;
         if (corners != null) {
-            Mat warpedMat = warpMaze(originalMat, corners);
-            Imgproc.cvtColor(warpedMat, warpedMat, Imgproc.COLOR_RGBA2BGR);
-            processedMat = robustClean(warpedMat);
-            warpedMat.release();
+            warpedOriginal = warpMaze(originalMat, corners);
         } else {
-            Imgproc.cvtColor(originalMat, originalMat, Imgproc.COLOR_RGBA2BGR);
-            processedMat = robustClean(originalMat);
+            warpedOriginal = originalMat.clone();
         }
 
-        int gridSize = 20;
-        int[][] grid = convertToLogicGrid(processedMat, gridSize);
+        detectedEntryPoints = findGreenMarkers(warpedOriginal);
 
-        displayGrid(grid);
+        Mat processedMat;
+        Imgproc.cvtColor(warpedOriginal, warpedOriginal, Imgproc.COLOR_RGBA2BGR);
+        processedMat = robustClean(warpedOriginal);
 
-        Mat displayMat = new Mat(1000, 1000, CvType.CV_8UC3, new Scalar(255, 255, 255));
-        Bitmap gridBitmap = Bitmap.createBitmap(displayMat.cols(), displayMat.rows(), Bitmap.Config.ARGB_8888);
-        Utils.matToBitmap(displayMat, gridBitmap);
+        int targetCells = 200;
+        currentGridSize = Math.max(3, Math.min(processedMat.cols(), processedMat.rows()) / targetCells);
 
-        List<PathFinder.Node> path = PathFinder.findPath(grid, 0, 0, grid.length - 1, grid[0].length - 1);
-        drawPathOnBitmap(gridBitmap, path, gridSize);
+        currentGrid = convertToLogicGrid(processedMat, currentGridSize);
+        if (currentProcessedMat != null) {
+            currentProcessedMat.release();
+        }
+        currentProcessedMat = processedMat.clone();
+
+        displayGrid(currentGrid);
+
+        if (detectedEntryPoints.isEmpty()) {
+            runOnUiThread(() -> Toast.makeText(this, "No green markers detected! Please mark entry/exit points with green dots.", Toast.LENGTH_LONG).show());
+            Mat displayMat = new Mat(processedMat.size(), CvType.CV_8UC3, new Scalar(255, 255, 255));
+            Bitmap gridBitmap = Bitmap.createBitmap(displayMat.cols(), displayMat.rows(), Bitmap.Config.ARGB_8888);
+            Utils.matToBitmap(displayMat, gridBitmap);
+            drawGridOnBitmap(gridBitmap, currentGrid, currentGridSize);
+            processedImageView.setImageBitmap(gridBitmap);
+            displayMat.release();
+            originalMat.release();
+            grayTemp.release();
+            binaryTemp.release();
+            processedMat.release();
+            warpedOriginal.release();
+            return;
+        }
+
+        if (detectedEntryPoints.size() < 2) {
+            runOnUiThread(() -> Toast.makeText(this, "Only " + detectedEntryPoints.size() + " marker(s) detected. Need at least 2!", Toast.LENGTH_LONG).show());
+            Mat displayMat = new Mat(processedMat.size(), CvType.CV_8UC3, new Scalar(255, 255, 255));
+            Bitmap gridBitmap = Bitmap.createBitmap(displayMat.cols(), displayMat.rows(), Bitmap.Config.ARGB_8888);
+            Utils.matToBitmap(displayMat, gridBitmap);
+            drawGridOnBitmap(gridBitmap, currentGrid, currentGridSize);
+            processedImageView.setImageBitmap(gridBitmap);
+            displayMat.release();
+            originalMat.release();
+            grayTemp.release();
+            binaryTemp.release();
+            processedMat.release();
+            warpedOriginal.release();
+            return;
+        }
+
+        List<Point> gridPoints = new ArrayList<>();
+        for (Point p : detectedEntryPoints) {
+            int gridX = (int)(p.x / currentGridSize);
+            int gridY = (int)(p.y / currentGridSize);
+            gridX = Math.max(0, Math.min(gridX, currentGrid.length - 1));
+            gridY = Math.max(0, Math.min(gridY, currentGrid[0].length - 1));
+            gridPoints.add(new Point(gridX, gridY));
+        }
+
+        runOnUiThread(() -> showStartPointSelection(gridPoints));
 
         originalMat.release();
         grayTemp.release();
         binaryTemp.release();
         processedMat.release();
+        warpedOriginal.release();
+    }
+
+    private void showStartPointSelection(List<Point> gridPoints) {
+        if (gridPoints.size() < 2) {
+            Toast.makeText(this, "Need at least 2 entry/exit points!", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        String[] options = new String[gridPoints.size()];
+        for (int i = 0; i < gridPoints.size(); i++) {
+            options[i] = "Point " + (i + 1) + " at grid (" + (int)gridPoints.get(i).x + ", " + (int)gridPoints.get(i).y + ")";
+        }
+
+        new AlertDialog.Builder(this)
+            .setTitle("Select Starting Point")
+            .setItems(options, (dialog, which) -> findBestPath(gridPoints, which))
+            .setNegativeButton("Cancel", null)
+            .show();
+    }
+
+    private void findBestPath(List<Point> gridPoints, int startIndex) {
+        Point startPoint = gridPoints.get(startIndex);
+
+        List<PathResult> paths = new ArrayList<>();
+
+        for (int i = 0; i < gridPoints.size(); i++) {
+            if (i == startIndex) continue;
+
+            Point endPoint = gridPoints.get(i);
+            List<PathFinder.Node> path = PathFinder.findPath(
+                currentGrid,
+                (int)startPoint.x,
+                (int)startPoint.y,
+                (int)endPoint.x,
+                (int)endPoint.y
+            );
+
+            if (path != null && !path.isEmpty()) {
+                paths.add(new PathResult(path, startPoint, endPoint, i));
+            }
+        }
+
+        if (paths.isEmpty()) {
+            runOnUiThread(() -> Toast.makeText(this, "No path found from selected starting point!", Toast.LENGTH_LONG).show());
+            return;
+        }
+
+        paths.sort(Comparator.comparingInt(p -> p.path.size()));
+        PathResult shortestPath = paths.get(0);
+
+        final PathResult finalPath = shortestPath;
+        runOnUiThread(() -> {
+            Toast.makeText(this, "Shortest path: Point " + (startIndex + 1) + " to Point " + (finalPath.endIndex + 1) + " (" + finalPath.path.size() + " steps)", Toast.LENGTH_LONG).show();
+            displayPath(finalPath);
+        });
+    }
+
+    private void displayPath(PathResult pathResult) {
+        Mat displayMat = new Mat(currentProcessedMat.size(), CvType.CV_8UC3, new Scalar(255, 255, 255));
+        Bitmap gridBitmap = Bitmap.createBitmap(displayMat.cols(), displayMat.rows(), Bitmap.Config.ARGB_8888);
+        Utils.matToBitmap(displayMat, gridBitmap);
+
+        drawGridOnBitmap(gridBitmap, currentGrid, currentGridSize);
+        drawPathOnBitmap(gridBitmap, pathResult.path, currentGridSize, pathResult.start, pathResult.end);
+
         displayMat.release();
+    }
+
+    private static class PathResult {
+        List<PathFinder.Node> path;
+        Point start;
+        Point end;
+        int endIndex;
+
+        PathResult(List<PathFinder.Node> path, Point start, Point end, int endIndex) {
+            this.path = path;
+            this.start = start;
+            this.end = end;
+            this.endIndex = endIndex;
+        }
+    }
+
+    private List<Point> findGreenMarkers(Mat image) {
+        List<Point> markers = new ArrayList<>();
+
+        Mat hsvImage = new Mat();
+        Imgproc.cvtColor(image, hsvImage, Imgproc.COLOR_RGBA2BGR);
+        Imgproc.cvtColor(hsvImage, hsvImage, Imgproc.COLOR_BGR2HSV);
+
+        Scalar lowerGreen = new Scalar(40, 80, 80);
+        Scalar upperGreen = new Scalar(80, 255, 255);
+
+        Mat greenMask = new Mat();
+        Core.inRange(hsvImage, lowerGreen, upperGreen, greenMask);
+
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(5, 5));
+        Imgproc.morphologyEx(greenMask, greenMask, Imgproc.MORPH_OPEN, kernel);
+        Imgproc.morphologyEx(greenMask, greenMask, Imgproc.MORPH_CLOSE, kernel);
+
+        List<MatOfPoint> contours = new ArrayList<>();
+        Mat hierarchy = new Mat();
+        Imgproc.findContours(greenMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+
+        for (MatOfPoint contour : contours) {
+            double area = Imgproc.contourArea(contour);
+            if (area > 50 && area < 20000) {
+                Moments moments = Imgproc.moments(contour);
+                if (moments.get_m00() != 0) {
+                    int cx = (int)(moments.get_m10() / moments.get_m00());
+                    int cy = (int)(moments.get_m01() / moments.get_m00());
+                    markers.add(new Point(cy, cx));
+                }
+            }
+            contour.release();
+        }
+
+        hsvImage.release();
+        greenMask.release();
+        kernel.release();
+        hierarchy.release();
+
+        return markers;
+    }
+
+    private void drawGridOnBitmap(Bitmap baseBitmap, int[][] grid, int gridSize) {
+        Canvas canvas = new Canvas(baseBitmap);
+        Paint wallPaint = new Paint();
+        wallPaint.setColor(Color.BLACK);
+        wallPaint.setStyle(Paint.Style.FILL);
+
+        Paint pathPaint = new Paint();
+        pathPaint.setColor(Color.WHITE);
+        pathPaint.setStyle(Paint.Style.FILL);
+
+        for (int r = 0; r < grid.length; r++) {
+            for (int c = 0; c < grid[0].length; c++) {
+                Paint paint = (grid[r][c] == 1) ? wallPaint : pathPaint;
+                canvas.drawRect(
+                    c * gridSize,
+                    r * gridSize,
+                    (c + 1) * gridSize,
+                    (r + 1) * gridSize,
+                    paint
+                );
+            }
+        }
+
+        Paint markerPaint = new Paint();
+        markerPaint.setColor(Color.GREEN);
+        markerPaint.setStyle(Paint.Style.FILL);
+        markerPaint.setAlpha(180);
+
+        for (Point marker : detectedEntryPoints) {
+            int gridX = (int)(marker.x / gridSize);
+            int gridY = (int)(marker.y / gridSize);
+            canvas.drawCircle(
+                gridY * gridSize + (gridSize / 2f),
+                gridX * gridSize + (gridSize / 2f),
+                gridSize * 2f,
+                markerPaint
+            );
+        }
+
+        runOnUiThread(() -> processedImageView.setImageBitmap(baseBitmap));
     }
 
     private void displayGrid(int[][] grid) {
         StringBuilder gridText = new StringBuilder();
+        gridText.append("Grid size: ").append(grid.length).append(" x ").append(grid[0].length).append("\n\n");
         for (int[] row : grid) {
             for (int cell : row) {
                 gridText.append(cell).append(" ");
@@ -226,24 +444,40 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    private void drawPathOnBitmap(Bitmap baseBitmap, List<PathFinder.Node> path, int gridSize) {
-        Bitmap mutableBitmap = baseBitmap.copy(Bitmap.Config.ARGB_8888, true);
-        Canvas canvas = new Canvas(mutableBitmap);
-        Paint paint = new Paint();
-        paint.setColor(Color.RED);
-        paint.setStrokeWidth(5f);
+    private void drawPathOnBitmap(Bitmap baseBitmap, List<PathFinder.Node> path, int gridSize, Point entry, Point exit) {
+        Canvas canvas = new Canvas(baseBitmap);
+        Paint pathPaint = new Paint();
+        pathPaint.setColor(Color.RED);
+        pathPaint.setStrokeWidth(5f);
+        pathPaint.setStyle(Paint.Style.STROKE);
 
-        if (path != null) {
+        Paint pointPaint = new Paint();
+        pointPaint.setColor(Color.GREEN);
+        pointPaint.setStyle(Paint.Style.FILL);
+
+        Paint exitPaint = new Paint();
+        exitPaint.setColor(Color.BLUE);
+        exitPaint.setStyle(Paint.Style.FILL);
+
+        if (path != null && path.size() > 1) {
             for (int i = 0; i < path.size() - 1; i++) {
                 float startX = path.get(i).y * gridSize + (gridSize / 2f);
                 float startY = path.get(i).x * gridSize + (gridSize / 2f);
                 float endX = path.get(i + 1).y * gridSize + (gridSize / 2f);
                 float endY = path.get(i + 1).x * gridSize + (gridSize / 2f);
-                canvas.drawLine(startX, startY, endX, endY, paint);
+                canvas.drawLine(startX, startY, endX, endY, pathPaint);
             }
+
+            float entryX = (float)entry.y * gridSize + (gridSize / 2f);
+            float entryY = (float)entry.x * gridSize + (gridSize / 2f);
+            canvas.drawCircle(entryX, entryY, gridSize / 3f, pointPaint);
+
+            float exitX = (float)exit.y * gridSize + (gridSize / 2f);
+            float exitY = (float)exit.x * gridSize + (gridSize / 2f);
+            canvas.drawCircle(exitX, exitY, gridSize / 3f, exitPaint);
         }
 
-        runOnUiThread(() -> processedImageView.setImageBitmap(mutableBitmap));
+        runOnUiThread(() -> processedImageView.setImageBitmap(baseBitmap));
     }
 
     private Mat robustClean(Mat warpedMat) {
@@ -274,6 +508,7 @@ public class MainActivity extends AppCompatActivity {
         for (int r = 0; r < rows; r++) {
             for (int c = 0; c < cols; c++) {
                 int wallPixelCount = 0;
+                int totalPixels = 0;
 
                 for (int i = 0; i < gridSize; i++) {
                     for (int j = 0; j < gridSize; j++) {
@@ -282,15 +517,18 @@ public class MainActivity extends AppCompatActivity {
 
                         if (checkR < binaryMat.rows() && checkC < binaryMat.cols()) {
                             double[] pixel = binaryMat.get(checkR, checkC);
-                            if (pixel[0] > 200) {
+                            if (pixel[0] > 200) {  // White pixel = wall in inverted binary
                                 wallPixelCount++;
                             }
+                            totalPixels++;
                         }
                     }
                 }
-                logicGrid[r][c] = (wallPixelCount > (gridSize * gridSize * 0.15)) ? 1 : 0;
+                logicGrid[r][c] = (wallPixelCount > (totalPixels * 0.25)) ? 1 : 0;
             }
         }
+
+        Log.d(TAG, "Logic grid created: " + rows + " x " + cols);
         return logicGrid;
     }
 
