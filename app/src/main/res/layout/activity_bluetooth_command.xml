@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fillViewport="true">
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="16dp"
+        tools:context=".BluetoothCommandActivity">
+
+        <TextView
+            android:id="@+id/title_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Bluetooth Terminal"
+            android:textSize="24sp"
+            android:textStyle="bold"
+            app:layout_constraintEnd_toEndOf="parent"
+            android:layout_marginTop="8dp"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <TextView
+            android:id="@+id/status_text"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="Status: Not connected"
+            android:textSize="14sp"
+            android:padding="8dp"
+            android:background="@android:color/darker_gray"
+            android:textColor="@android:color/white"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/title_text"
+            android:layout_marginTop="16dp" />
+
+        <Button
+            android:id="@+id/scan_button"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="Scan for HC-05"
+            android:textSize="14sp"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/status_text"
+            android:layout_marginTop="16dp" />
+
+        <Button
+            android:id="@+id/connect_button"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="Connect to HC-05"
+            android:textSize="14sp"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/scan_button"
+            android:layout_marginTop="8dp" />
+
+        <TextView
+            android:id="@+id/received_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Received Data / Device List:"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/connect_button"
+            android:layout_marginTop="16dp" />
+
+        <ScrollView
+            android:id="@+id/received_scroll"
+            android:layout_width="0dp"
+            android:layout_height="120dp"
+            android:background="#F0F0F0"
+            android:padding="8dp"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/received_label"
+            android:layout_marginTop="4dp">
+
+            <TextView
+                android:id="@+id/received_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="No data received yet"
+                android:textSize="11sp"
+                android:textColor="@android:color/black"
+                android:fontFamily="monospace" />
+        </ScrollView>
+
+        <TextView
+            android:id="@+id/command_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Send Custom Command:"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/received_scroll"
+            android:layout_marginTop="16dp" />
+
+        <EditText
+            android:id="@+id/command_input"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:hint="Enter command (e.g., TEST)"
+            android:inputType="text"
+            android:textSize="14sp"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/command_label"
+            android:layout_marginTop="4dp" />
+
+        <Button
+            android:id="@+id/send_command_button"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="Send Command"
+            android:textSize="14sp"
+            android:enabled="false"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/command_input"
+            android:layout_marginTop="8dp" />
+
+        <TextView
+            android:id="@+id/path_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Maze Path Data:"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/send_command_button"
+            android:layout_marginTop="16dp" />
+
+        <ScrollView
+            android:id="@+id/path_scroll"
+            android:layout_width="0dp"
+            android:layout_height="80dp"
+            android:background="#E8F5E9"
+            android:padding="8dp"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/path_label"
+            android:layout_marginTop="4dp">
+
+            <TextView
+                android:id="@+id/path_text"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="No path data"
+                android:textSize="10sp"
+                android:textColor="@android:color/black"
+                android:fontFamily="monospace" />
+        </ScrollView>
+
+        <Button
+            android:id="@+id/send_path_button"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="Send Path to Robot"
+            android:textSize="14sp"
+            android:enabled="false"
+            android:backgroundTint="#4CAF50"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/path_scroll"
+            android:layout_marginTop="8dp" />
+
+        <Button
+            android:id="@+id/disconnect_button"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="Disconnect"
+            android:textSize="14sp"
+            android:enabled="false"
+            android:backgroundTint="#F44336"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/send_path_button"
+            android:layout_marginTop="8dp" />
+
+        <TextView
+            android:id="@+id/instructions_text"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:text="Steps:
+1. Make sure HC-05 is paired
+2. Click 'Scan for HC-05'
+3. Click 'Connect to HC-05'
+4. Test with custom commands
+5. Send maze path when ready"
+            android:textSize="11sp"
+            android:padding="12dp"
+            android:background="#E3F2FD"
+            android:textColor="@android:color/black"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toBottomOf="@id/disconnect_button"
+            android:layout_marginTop="16dp"
+            android:layout_marginBottom="16dp" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+</ScrollView>

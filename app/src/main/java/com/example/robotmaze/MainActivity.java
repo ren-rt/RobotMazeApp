@@ -1,7 +1,6 @@
 package com.example.robotmaze;
 
 import android.Manifest;
-import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
@@ -11,6 +10,7 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.util.Log;
@@ -21,7 +21,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import androidx.activity.EdgeToEdge;
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
@@ -67,6 +66,7 @@ public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "MainActivity";
     private static final int CAMERA_PERMISSION_REQUEST_CODE = 100;
+    private static final int BLUETOOTH_PERMISSION_REQUEST_CODE = 101;
 
     static {
         if (OpenCVLoader.initLocal()) {
@@ -86,15 +86,12 @@ public class MainActivity extends AppCompatActivity {
     private Bitmap originalBitmap;
     private ActivityResultLauncher<Intent> pickImageLauncher;
 
-    private List<Point> detectedEntryPoints = new ArrayList<>();
-    private int[][] currentGrid;
-    private int currentGridSize;
-    private Mat currentProcessedMat;
+    private final String DEVICE_ADDRESS = "4C:03:B3:F7:24:ED"; // Replace with your device's address
+    private Runnable onBluetoothPermissionGranted;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        EdgeToEdge.enable(this);
         setContentView(R.layout.activity_main);
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
             Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
@@ -134,7 +131,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     public void onCaptureButtonClick(View view) {
-        if (imageCapture == null) return;
         imageCapture.takePicture(ContextCompat.getMainExecutor(this), new ImageCapture.OnImageCapturedCallback() {
             @Override
             public void onCaptureSuccess(@NonNull ImageProxy image) {
@@ -179,9 +175,18 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private List<Point> detectedEntryPoints = new ArrayList<>();
+    private int[][] currentGrid;
+    private int currentGridSize;
+    private Mat currentProcessedMat;
+
     private void processMaze(Bitmap bitmap) {
         Mat originalMat = new Mat();
         Utils.bitmapToMat(bitmap, originalMat);
+
+        Mat originalBGR = new Mat();
+        Imgproc.cvtColor(originalMat, originalBGR, Imgproc.COLOR_RGBA2BGR);
+        detectedEntryPoints = findGreenMarkers(originalBGR);
 
         Mat grayTemp = new Mat();
         Imgproc.cvtColor(originalMat, grayTemp, Imgproc.COLOR_RGBA2GRAY);
@@ -194,18 +199,19 @@ public class MainActivity extends AppCompatActivity {
         Mat warpedOriginal;
         if (corners != null) {
             warpedOriginal = warpMaze(originalMat, corners);
+            List<Point> warpedMarkers = warpPoints(detectedEntryPoints, corners, 1000, 1000);
+            detectedEntryPoints = warpedMarkers;
         } else {
             warpedOriginal = originalMat.clone();
         }
 
-        detectedEntryPoints = findGreenMarkers(warpedOriginal);
-
         Mat processedMat;
         Imgproc.cvtColor(warpedOriginal, warpedOriginal, Imgproc.COLOR_RGBA2BGR);
         processedMat = robustClean(warpedOriginal);
+        originalBGR.release();
 
-        int targetCells = 200;
-        currentGridSize = Math.max(3, Math.min(processedMat.cols(), processedMat.rows()) / targetCells);
+        int targetCells = 150;
+        currentGridSize = Math.max(4, Math.min(processedMat.cols(), processedMat.rows()) / targetCells);
 
         currentGrid = convertToLogicGrid(processedMat, currentGridSize);
         if (currentProcessedMat != null) {
@@ -215,42 +221,15 @@ public class MainActivity extends AppCompatActivity {
 
         displayGrid(currentGrid);
 
-        if (detectedEntryPoints.isEmpty()) {
-            runOnUiThread(() -> Toast.makeText(this, "No green markers detected! Please mark entry/exit points with green dots.", Toast.LENGTH_LONG).show());
-            Mat displayMat = new Mat(processedMat.size(), CvType.CV_8UC3, new Scalar(255, 255, 255));
-            Bitmap gridBitmap = Bitmap.createBitmap(displayMat.cols(), displayMat.rows(), Bitmap.Config.ARGB_8888);
-            Utils.matToBitmap(displayMat, gridBitmap);
-            drawGridOnBitmap(gridBitmap, currentGrid, currentGridSize);
-            processedImageView.setImageBitmap(gridBitmap);
-            displayMat.release();
-            originalMat.release();
-            grayTemp.release();
-            binaryTemp.release();
-            processedMat.release();
-            warpedOriginal.release();
-            return;
-        }
-
         if (detectedEntryPoints.size() < 2) {
-            runOnUiThread(() -> Toast.makeText(this, "Only " + detectedEntryPoints.size() + " marker(s) detected. Need at least 2!", Toast.LENGTH_LONG).show());
-            Mat displayMat = new Mat(processedMat.size(), CvType.CV_8UC3, new Scalar(255, 255, 255));
-            Bitmap gridBitmap = Bitmap.createBitmap(displayMat.cols(), displayMat.rows(), Bitmap.Config.ARGB_8888);
-            Utils.matToBitmap(displayMat, gridBitmap);
-            drawGridOnBitmap(gridBitmap, currentGrid, currentGridSize);
-            processedImageView.setImageBitmap(gridBitmap);
-            displayMat.release();
-            originalMat.release();
-            grayTemp.release();
-            binaryTemp.release();
-            processedMat.release();
-            warpedOriginal.release();
+            runOnUiThread(() -> Toast.makeText(this, "Need at least 2 green markers for entry/exit.", Toast.LENGTH_LONG).show());
             return;
         }
 
         List<Point> gridPoints = new ArrayList<>();
         for (Point p : detectedEntryPoints) {
-            int gridX = (int)(p.x / currentGridSize);
-            int gridY = (int)(p.y / currentGridSize);
+            int gridX = (int) (p.x / currentGridSize);
+            int gridY = (int) (p.y / currentGridSize);
             gridX = Math.max(0, Math.min(gridX, currentGrid.length - 1));
             gridY = Math.max(0, Math.min(gridY, currentGrid[0].length - 1));
             gridPoints.add(new Point(gridX, gridY));
@@ -266,58 +245,80 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void showStartPointSelection(List<Point> gridPoints) {
-        if (gridPoints.size() < 2) {
-            Toast.makeText(this, "Need at least 2 entry/exit points!", Toast.LENGTH_LONG).show();
-            return;
-        }
-
         String[] options = new String[gridPoints.size()];
         for (int i = 0; i < gridPoints.size(); i++) {
-            options[i] = "Point " + (i + 1) + " at grid (" + (int)gridPoints.get(i).x + ", " + (int)gridPoints.get(i).y + ")";
+            options[i] = "Point " + (i + 1) + " at grid (" + (int) gridPoints.get(i).x + ", " + (int) gridPoints.get(i).y + ")";
         }
 
-        new AlertDialog.Builder(this)
-            .setTitle("Select Starting Point")
-            .setItems(options, (dialog, which) -> findBestPath(gridPoints, which))
-            .setNegativeButton("Cancel", null)
-            .show();
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Select Starting Point")
+                .setItems(options, (dialog, which) -> initiatePathfindingAndBluetooth(gridPoints, which))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void initiatePathfindingAndBluetooth(List<Point> gridPoints, int startIndex) {
+        onBluetoothPermissionGranted = () -> findBestPath(gridPoints, startIndex);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED ||
+                    checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN}, BLUETOOTH_PERMISSION_REQUEST_CODE);
+            } else {
+                onBluetoothPermissionGranted.run();
+                onBluetoothPermissionGranted = null;
+            }
+        } else {
+            onBluetoothPermissionGranted.run();
+            onBluetoothPermissionGranted = null;
+        }
     }
 
     private void findBestPath(List<Point> gridPoints, int startIndex) {
         Point startPoint = gridPoints.get(startIndex);
-
         List<PathResult> paths = new ArrayList<>();
 
         for (int i = 0; i < gridPoints.size(); i++) {
             if (i == startIndex) continue;
 
             Point endPoint = gridPoints.get(i);
-            List<PathFinder.Node> path = PathFinder.findPath(
-                currentGrid,
-                (int)startPoint.x,
-                (int)startPoint.y,
-                (int)endPoint.x,
-                (int)endPoint.y
-            );
+            List<PathFinder.Node> path = PathFinder.findPath(currentGrid, (int) startPoint.x, (int) startPoint.y, (int) endPoint.x, (int) endPoint.y);
 
-            if (path != null && !path.isEmpty()) {
+            if (path != null && !path.isEmpty() && isPathValid(path, currentGrid)) {
                 paths.add(new PathResult(path, startPoint, endPoint, i));
             }
         }
 
         if (paths.isEmpty()) {
-            runOnUiThread(() -> Toast.makeText(this, "No path found from selected starting point!", Toast.LENGTH_LONG).show());
+            runOnUiThread(() -> Toast.makeText(this, "No valid path found from selected starting point!", Toast.LENGTH_LONG).show());
             return;
         }
 
-        paths.sort(Comparator.comparingInt(p -> p.path.size()));
-        PathResult shortestPath = paths.get(0);
+        PathResult shortestPath = Collections.min(paths, Comparator.comparingInt(p -> p.path.size()));
 
-        final PathResult finalPath = shortestPath;
         runOnUiThread(() -> {
-            Toast.makeText(this, "Shortest path: Point " + (startIndex + 1) + " to Point " + (finalPath.endIndex + 1) + " (" + finalPath.path.size() + " steps)", Toast.LENGTH_LONG).show();
-            displayPath(finalPath);
+            displayPath(shortestPath);
+            launchBluetoothActivity(shortestPath);
         });
+    }
+
+    private void launchBluetoothActivity(PathResult pathResult) {
+        StringBuilder pathString = new StringBuilder();
+        for (PathFinder.Node node : pathResult.path) {
+            pathString.append(node.x).append(",").append(node.y).append(";");
+        }
+
+        Intent intent = new Intent(MainActivity.this, BluetoothCommandActivity.class);
+        intent.putExtra("device_address", DEVICE_ADDRESS);
+        intent.putExtra("path", pathString.toString());
+        startActivity(intent);
+    }
+
+    private boolean isPathValid(List<PathFinder.Node> path, int[][] grid) {
+        for (PathFinder.Node node : path) {
+            if (grid[node.x][node.y] == 1) return false;
+        }
+        return true;
     }
 
     private void displayPath(PathResult pathResult) {
@@ -333,8 +334,7 @@ public class MainActivity extends AppCompatActivity {
 
     private static class PathResult {
         List<PathFinder.Node> path;
-        Point start;
-        Point end;
+        Point start, end;
         int endIndex;
 
         PathResult(List<PathFinder.Node> path, Point start, Point end, int endIndex) {
@@ -347,43 +347,32 @@ public class MainActivity extends AppCompatActivity {
 
     private List<Point> findGreenMarkers(Mat image) {
         List<Point> markers = new ArrayList<>();
-
         Mat hsvImage = new Mat();
-        Imgproc.cvtColor(image, hsvImage, Imgproc.COLOR_RGBA2BGR);
-        Imgproc.cvtColor(hsvImage, hsvImage, Imgproc.COLOR_BGR2HSV);
-
-        Scalar lowerGreen = new Scalar(40, 80, 80);
-        Scalar upperGreen = new Scalar(80, 255, 255);
-
+        Imgproc.cvtColor(image, hsvImage, Imgproc.COLOR_BGR2HSV);
+        Scalar lowerGreen = new Scalar(45, 100, 100);
+        Scalar upperGreen = new Scalar(75, 255, 255);
         Mat greenMask = new Mat();
         Core.inRange(hsvImage, lowerGreen, upperGreen, greenMask);
-
-        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(5, 5));
-        Imgproc.morphologyEx(greenMask, greenMask, Imgproc.MORPH_OPEN, kernel);
-        Imgproc.morphologyEx(greenMask, greenMask, Imgproc.MORPH_CLOSE, kernel);
-
+        Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, new Size(3, 3));
+        Imgproc.morphologyEx(greenMask, greenMask, Imgproc.MORPH_OPEN, kernel, new Point(-1, -1), 2);
+        Imgproc.dilate(greenMask, greenMask, kernel, new Point(-1, -1), 1);
         List<MatOfPoint> contours = new ArrayList<>();
-        Mat hierarchy = new Mat();
-        Imgproc.findContours(greenMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
+        Imgproc.findContours(greenMask, contours, new Mat(), Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
 
         for (MatOfPoint contour : contours) {
-            double area = Imgproc.contourArea(contour);
-            if (area > 50 && area < 20000) {
+            if (Imgproc.contourArea(contour) > 100) {
                 Moments moments = Imgproc.moments(contour);
                 if (moments.get_m00() != 0) {
-                    int cx = (int)(moments.get_m10() / moments.get_m00());
-                    int cy = (int)(moments.get_m01() / moments.get_m00());
+                    int cx = (int) (moments.get_m10() / moments.get_m00());
+                    int cy = (int) (moments.get_m01() / moments.get_m00());
                     markers.add(new Point(cy, cx));
                 }
             }
             contour.release();
         }
-
         hsvImage.release();
         greenMask.release();
         kernel.release();
-        hierarchy.release();
-
         return markers;
     }
 
@@ -392,7 +381,6 @@ public class MainActivity extends AppCompatActivity {
         Paint wallPaint = new Paint();
         wallPaint.setColor(Color.BLACK);
         wallPaint.setStyle(Paint.Style.FILL);
-
         Paint pathPaint = new Paint();
         pathPaint.setColor(Color.WHITE);
         pathPaint.setStyle(Paint.Style.FILL);
@@ -400,13 +388,7 @@ public class MainActivity extends AppCompatActivity {
         for (int r = 0; r < grid.length; r++) {
             for (int c = 0; c < grid[0].length; c++) {
                 Paint paint = (grid[r][c] == 1) ? wallPaint : pathPaint;
-                canvas.drawRect(
-                    c * gridSize,
-                    r * gridSize,
-                    (c + 1) * gridSize,
-                    (r + 1) * gridSize,
-                    paint
-                );
+                canvas.drawRect(c * gridSize, r * gridSize, (c + 1) * gridSize, (r + 1) * gridSize, paint);
             }
         }
 
@@ -414,19 +396,11 @@ public class MainActivity extends AppCompatActivity {
         markerPaint.setColor(Color.GREEN);
         markerPaint.setStyle(Paint.Style.FILL);
         markerPaint.setAlpha(180);
-
         for (Point marker : detectedEntryPoints) {
-            int gridX = (int)(marker.x / gridSize);
-            int gridY = (int)(marker.y / gridSize);
-            canvas.drawCircle(
-                gridY * gridSize + (gridSize / 2f),
-                gridX * gridSize + (gridSize / 2f),
-                gridSize * 2f,
-                markerPaint
-            );
+            int gridX = (int) (marker.x / gridSize);
+            int gridY = (int) (marker.y / gridSize);
+            canvas.drawCircle(gridY * gridSize + (gridSize / 2f), gridX * gridSize + (gridSize / 2f), gridSize * 2f, markerPaint);
         }
-
-        runOnUiThread(() -> processedImageView.setImageBitmap(baseBitmap));
     }
 
     private void displayGrid(int[][] grid) {
@@ -450,11 +424,9 @@ public class MainActivity extends AppCompatActivity {
         pathPaint.setColor(Color.RED);
         pathPaint.setStrokeWidth(5f);
         pathPaint.setStyle(Paint.Style.STROKE);
-
         Paint pointPaint = new Paint();
         pointPaint.setColor(Color.GREEN);
         pointPaint.setStyle(Paint.Style.FILL);
-
         Paint exitPaint = new Paint();
         exitPaint.setColor(Color.BLUE);
         exitPaint.setStyle(Paint.Style.FILL);
@@ -467,36 +439,23 @@ public class MainActivity extends AppCompatActivity {
                 float endY = path.get(i + 1).x * gridSize + (gridSize / 2f);
                 canvas.drawLine(startX, startY, endX, endY, pathPaint);
             }
-
-            float entryX = (float)entry.y * gridSize + (gridSize / 2f);
-            float entryY = (float)entry.x * gridSize + (gridSize / 2f);
-            canvas.drawCircle(entryX, entryY, gridSize / 3f, pointPaint);
-
-            float exitX = (float)exit.y * gridSize + (gridSize / 2f);
-            float exitY = (float)exit.x * gridSize + (gridSize / 2f);
-            canvas.drawCircle(exitX, exitY, gridSize / 3f, exitPaint);
+            canvas.drawCircle((float) entry.y * gridSize + (gridSize / 2f), (float) entry.x * gridSize + (gridSize / 2f), gridSize / 3f, pointPaint);
+            canvas.drawCircle((float) exit.y * gridSize + (gridSize / 2f), (float) exit.x * gridSize + (gridSize / 2f), gridSize / 3f, exitPaint);
         }
-
         runOnUiThread(() -> processedImageView.setImageBitmap(baseBitmap));
     }
 
     private Mat robustClean(Mat warpedMat) {
         Mat gray = new Mat();
-        Mat binary = new Mat();
-
         Imgproc.cvtColor(warpedMat, gray, Imgproc.COLOR_BGR2GRAY);
         Imgproc.GaussianBlur(gray, gray, new Size(5, 5), 0);
-
         Core.normalize(gray, gray, 0, 255, Core.NORM_MINMAX);
-
+        Mat binary = new Mat();
         Imgproc.threshold(gray, binary, 0, 255, Imgproc.THRESH_BINARY_INV | Imgproc.THRESH_OTSU);
-
         Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new Size(3, 3));
         Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_OPEN, kernel);
-
         gray.release();
         kernel.release();
-
         return binary;
     }
 
@@ -504,47 +463,22 @@ public class MainActivity extends AppCompatActivity {
         int rows = binaryMat.rows() / gridSize;
         int cols = binaryMat.cols() / gridSize;
         int[][] logicGrid = new int[rows][cols];
-
         for (int r = 0; r < rows; r++) {
             for (int c = 0; c < cols; c++) {
-                int wallPixelCount = 0;
-                int totalPixels = 0;
-
-                for (int i = 0; i < gridSize; i++) {
-                    for (int j = 0; j < gridSize; j++) {
-                        int checkR = r * gridSize + i;
-                        int checkC = c * gridSize + j;
-
-                        if (checkR < binaryMat.rows() && checkC < binaryMat.cols()) {
-                            double[] pixel = binaryMat.get(checkR, checkC);
-                            if (pixel[0] > 200) {  // White pixel = wall in inverted binary
-                                wallPixelCount++;
-                            }
-                            totalPixels++;
-                        }
-                    }
-                }
-                logicGrid[r][c] = (wallPixelCount > (totalPixels * 0.25)) ? 1 : 0;
+                Mat cell = new Mat(binaryMat, new org.opencv.core.Rect(c * gridSize, r * gridSize, gridSize, gridSize));
+                int wallPixels = Core.countNonZero(cell);
+                logicGrid[r][c] = (wallPixels > (gridSize * gridSize * 0.4)) ? 1 : 0;
+                cell.release();
             }
         }
-
-        Log.d(TAG, "Logic grid created: " + rows + " x " + cols);
         return logicGrid;
     }
 
     private Mat warpMaze(Mat input, Point[] corners) {
         Point[] sortedCorners = sortCorners(corners);
-
         MatOfPoint2f src = new MatOfPoint2f(sortedCorners);
-        MatOfPoint2f dst = new MatOfPoint2f(
-                new Point(0, 0),
-                new Point(1000, 0),
-                new Point(1000, 1000),
-                new Point(0, 1000)
-        );
-
+        MatOfPoint2f dst = new MatOfPoint2f(new Point(0, 0), new Point(1000, 0), new Point(1000, 1000), new Point(0, 1000));
         Mat perspectiveTransform = Imgproc.getPerspectiveTransform(src, dst);
-
         Mat warped = new Mat();
         Imgproc.warpPerspective(input, warped, perspectiveTransform, new Size(1000, 1000));
         perspectiveTransform.release();
@@ -556,25 +490,36 @@ public class MainActivity extends AppCompatActivity {
     private Point[] sortCorners(Point[] corners) {
         List<Point> cornerList = new ArrayList<>(Arrays.asList(corners));
         cornerList.sort(Comparator.comparingDouble(p -> p.y));
-        if (cornerList.get(0).x > cornerList.get(1).x) {
-            Collections.swap(cornerList, 0, 1);
-        }
-        if (cornerList.get(2).x < cornerList.get(3).x) {
-            Collections.swap(cornerList, 2, 3);
-        }
-
+        if (cornerList.get(0).x > cornerList.get(1).x) Collections.swap(cornerList, 0, 1);
+        if (cornerList.get(2).x < cornerList.get(3).x) Collections.swap(cornerList, 2, 3);
         return cornerList.toArray(new Point[0]);
     }
 
+    private List<Point> warpPoints(List<Point> points, Point[] corners, int dstWidth, int dstHeight) {
+        if (points.isEmpty()) return points;
+        MatOfPoint2f src = new MatOfPoint2f(sortCorners(corners));
+        MatOfPoint2f dst = new MatOfPoint2f(new Point(0, 0), new Point(dstWidth, 0), new Point(dstWidth, dstHeight), new Point(0, dstHeight));
+        Mat perspectiveTransform = Imgproc.getPerspectiveTransform(src, dst);
+        List<Point> warpedPoints = new ArrayList<>();
+        for (Point p : points) {
+            MatOfPoint2f pointMat = new MatOfPoint2f(p);
+            MatOfPoint2f warpedPointMat = new MatOfPoint2f();
+            Core.perspectiveTransform(pointMat, warpedPointMat, perspectiveTransform);
+            warpedPoints.add(warpedPointMat.toArray()[0]);
+            pointMat.release();
+            warpedPointMat.release();
+        }
+        perspectiveTransform.release();
+        src.release();
+        dst.release();
+        return warpedPoints;
+    }
 
     private Point[] findMazeCorners(Mat binary) {
         List<MatOfPoint> contours = new ArrayList<>();
-        Mat hierarchy = new Mat();
-
-        Imgproc.findContours(binary, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
-
-        double maxArea = 0;
+        Imgproc.findContours(binary, contours, new Mat(), Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
         MatOfPoint largestContour = null;
+        double maxArea = 0;
         for (MatOfPoint contour : contours) {
             double area = Imgproc.contourArea(contour);
             if (area > maxArea) {
@@ -582,13 +527,11 @@ public class MainActivity extends AppCompatActivity {
                 largestContour = contour;
             }
         }
-
         if (largestContour != null) {
             MatOfPoint2f contour2f = new MatOfPoint2f(largestContour.toArray());
             double peri = Imgproc.arcLength(contour2f, true);
             MatOfPoint2f approx = new MatOfPoint2f();
             Imgproc.approxPolyDP(contour2f, approx, 0.02 * peri, true);
-
             if (approx.total() == 4) {
                 Point[] result = approx.toArray();
                 approx.release();
@@ -598,12 +541,6 @@ public class MainActivity extends AppCompatActivity {
             approx.release();
             contour2f.release();
         }
-
-        for (MatOfPoint contour : contours) {
-            contour.release();
-        }
-        hierarchy.release();
-
         return null;
     }
 
@@ -628,33 +565,22 @@ public class MainActivity extends AppCompatActivity {
         ByteBuffer buffer = image.getPlanes()[0].getBuffer();
         byte[] bytes = new byte[buffer.remaining()];
         buffer.get(bytes);
-
         Bitmap bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.length);
-
         Matrix matrix = new Matrix();
         matrix.postRotate(image.getImageInfo().getRotationDegrees());
-
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
     }
 
     private void startCamera() {
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
-
         cameraProviderFuture.addListener(() -> {
             try {
                 ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
-
                 Preview preview = new Preview.Builder().build();
                 preview.setSurfaceProvider(previewView.getSurfaceProvider());
-
-                imageCapture = new ImageCapture.Builder()
-                    .setTargetRotation(getWindowManager().getDefaultDisplay().getRotation())
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
-                    .build();
-
+                imageCapture = new ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY).build();
                 cameraProvider.unbindAll();
                 cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, preview, imageCapture);
-
             } catch (Exception e) {
                 Log.e("CameraX", "Binding failed", e);
             }
@@ -662,8 +588,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private boolean allPermissionsGranted() {
-        return ContextCompat.checkSelfPermission(
-                this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+        return ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
     }
 
     @Override
@@ -675,6 +600,15 @@ public class MainActivity extends AppCompatActivity {
             } else {
                 Toast.makeText(this, "Permissions not granted by the user.", Toast.LENGTH_SHORT).show();
                 finish();
+            }
+        } else if (requestCode == BLUETOOTH_PERMISSION_REQUEST_CODE) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                if (onBluetoothPermissionGranted != null) {
+                    onBluetoothPermissionGranted.run();
+                    onBluetoothPermissionGranted = null;
+                }
+            } else {
+                Toast.makeText(this, "Bluetooth permissions are required to connect to the robot.", Toast.LENGTH_SHORT).show();
             }
         }
     }
